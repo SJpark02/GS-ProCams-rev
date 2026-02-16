@@ -24,7 +24,7 @@ def BRDF(light_dir, view_dir, normal, base_color, roughness, F0=0.04):
         roughness: Surface roughness (# (H, W))
 
     Returns:
-        brdf_factor: the shading factor (# (3, H, W))
+        brdf_factor: the shading factor (# (3, H, W)) with cosine term
     '''
 
     # Diffuse term
@@ -61,7 +61,7 @@ def BRDF(light_dir, view_dir, normal, base_color, roughness, F0=0.04):
 
     # lighting
     brdf_factor = diffuse + specular
-    return brdf_factor
+    return brdf_factor * NdotL
 
 def caculate_loss(viewpoint_camera, pc, results, opt):
     log_items = {"num_points": pc.get_xyz.shape[0]}
