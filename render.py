@@ -57,6 +57,10 @@ if __name__ == '__main__':
                         help="Uniform roughness (0-1) of the virtual projection screen. Higher = more matte/diffuse, lower = glossier specular highlights.")
     parser.add_argument("--ambient", type=float, default=0.0,
                         help="Weight of the rasterized scene colour blended into the result. 0 (default) = pure projection on the virtual screen; >0 blends in the real object.")
+    parser.add_argument("--render_object_too", action="store_true",
+                        help="Also render the SAME pattern on the real, depth-reconstructed object (the original synthetic.sh result) alongside the surface render, so you can compare how the synthetic.sh output looks when applied to a sphere/hemisphere/etc. Saved under <view>/object/.")
+    parser.add_argument("--name_by_pattern", action="store_true",
+                        help="Name output files after the source pattern file (e.g. img_0001.png) instead of a running index (01.png), matching the original synthetic.sh naming.")
     parser.add_argument("--no_auto_scale", action="store_true",
                         help="Disable scene-aware auto-sizing of the synthetic surface. "
                              "By default the surface is auto-placed/-sized from the trained "
@@ -123,6 +127,9 @@ if __name__ == '__main__':
         if len(pattern_files) == 0:
             raise FileNotFoundError(f"No image patterns found in {patterns_valid_dir}.")
         print(f"Loading {len(pattern_files)} pattern(s) from: {patterns_valid_dir}")
+        # Keep the source pattern file stems so outputs can be named after the
+        # pattern (matching the original synthetic.sh naming) when requested.
+        pattern_names = [os.path.splitext(f)[0] for f in pattern_files]
         patterns_valid = [loadImage(os.path.join(patterns_valid_dir, pattern_valid_file)) for pattern_valid_file in tqdm(pattern_files, leave=False)]
         patterns_valid = [torch.from_numpy(pattern_valid).float().cuda().permute(2, 0, 1).clamp(0, 1) for pattern_valid in patterns_valid]
         patterns_valid = torch.stack(patterns_valid, dim=0)
@@ -134,8 +141,16 @@ if __name__ == '__main__':
             Ip_out_dir = os.path.join(args.output, f"{view_id:02d}", "Ip_out")
             os.makedirs(save_dir, exist_ok=True)
             os.makedirs(Ip_out_dir, exist_ok=True)
+            # When --render_object_too is set we also produce the ORIGINAL synthetic.sh
+            # result (same pattern projected on the real, depth-reconstructed object) so
+            # the surface render can be compared against it side by side.
+            object_dir = os.path.join(args.output, f"{view_id:02d}", "object")
+            if args.render_object_too and args.surface_mode is not None:
+                os.makedirs(object_dir, exist_ok=True)
             for i, pattern in enumerate(tqdm(patterns_valid, desc=f"Relighting view {view_id:02d}", leave=False)):
                 procams_dict.update({"pattern": pattern})
+                # Output stem: pattern name (matches synthetic.sh) or running index.
+                stem = pattern_names[i] if args.name_by_pattern else f"{i+1:02d}"
                 if args.surface_mode is None:
                     render_dic = render(camera, gaussians, pipe=None, bg_color=bg_color, procams_dict=procams_dict)
                 else:
@@ -146,11 +161,15 @@ if __name__ == '__main__':
                                                       surface_albedo=args.surface_albedo,
                                                       surface_roughness=args.surface_roughness,
                                                       ambient=args.ambient)
+                    # Same pattern on the real object (original synthetic.sh-style result).
+                    if args.render_object_too:
+                        object_dic = render(camera, gaussians, pipe=None, bg_color=bg_color, procams_dict=procams_dict)
+                        save_image(object_dic["render"], os.path.join(object_dir, f"{stem}.png"))
                 render_image = render_dic["render"]
-                save_path = os.path.join(save_dir, f"{i+1:02d}.png")
+                save_path = os.path.join(save_dir, f"{stem}.png")
                 save_image(render_image, save_path)
                 Ip_out = render_dic["Ip_out"]
-                save_path = os.path.join(Ip_out_dir, f"{i+1:02d}.png")
+                save_path = os.path.join(Ip_out_dir, f"{stem}.png")
                 save_image(Ip_out, save_path)
 
             if args.render_scene:

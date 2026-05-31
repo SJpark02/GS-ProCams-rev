@@ -71,6 +71,18 @@ max_views="${MAX_VIEWS:-5}"
 # custom projection mapping, e.g. pattern_path="data/my_images".
 pattern_path="${PATTERN_PATH:-}"
 
+# Also render the SAME pattern on the real object (the original synthetic.sh
+# result) next to the surface render, so you can compare how the synthetic.sh
+# output looks when re-projected onto a sphere/hemisphere/etc.
+# Saved under <view>/object/. Set RENDER_OBJECT_TOO=1 to enable. ON by default
+# because the whole point of this script is that comparison.
+render_object_too="${RENDER_OBJECT_TOO:-1}"
+
+# Name output files after the source pattern (e.g. img_0001.png) instead of a
+# running index (01.png), matching the original synthetic.sh naming.
+# Set NAME_BY_PATTERN=0 to use the running-index naming instead.
+name_by_pattern="${NAME_BY_PATTERN:-1}"
+
 # Helper: read available view_ids from a model's cameras.json.
 get_views_from_cameras_json() {
     local cam_json="$1/cameras.json"
@@ -167,6 +179,12 @@ for setup_name in "${setup_names[@]}"; do
             # --surface_mode is provided.
             pattern_arg=()
             if [ -n "$pattern_path" ]; then pattern_arg=(--pattern_path "$pattern_path"); fi
+
+            # Comparison / naming passthrough flags.
+            compare_arg=()
+            if [ "$render_object_too" != "0" ]; then compare_arg+=(--render_object_too); fi
+            if [ "$name_by_pattern" != "0" ]; then compare_arg+=(--name_by_pattern); fi
+
             "$PYTHON_BIN" render.py \
                 -r "$input_dir" \
                 -s "$setup_name" \
@@ -176,6 +194,7 @@ for setup_name in "${setup_names[@]}"; do
                 --views ${render_views} \
                 "${surface_args[@]}" \
                 "${pattern_arg[@]}" \
+                "${compare_arg[@]}" \
                 --gpu_id "$gpu_id"
         done
     done

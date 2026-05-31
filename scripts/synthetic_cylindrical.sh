@@ -60,6 +60,15 @@ max_views="${MAX_VIEWS:-5}"
 # custom projection mapping, e.g. pattern_path="data/my_images".
 pattern_path="${PATTERN_PATH:-}"
 
+# Also render the SAME pattern on the real object (original synthetic.sh result)
+# next to the surface render, for comparison. Saved under <view>/object/.
+# Set RENDER_OBJECT_TOO=0 to disable.
+render_object_too="${RENDER_OBJECT_TOO:-1}"
+
+# Name outputs after the source pattern (img_0001.png) instead of an index (01.png),
+# matching synthetic.sh. Set NAME_BY_PATTERN=0 to use index naming.
+name_by_pattern="${NAME_BY_PATTERN:-1}"
+
 # Helper: read available view_ids from a model's cameras.json.
 get_views_from_cameras_json() {
     local cam_json="$1/cameras.json"
@@ -126,6 +135,9 @@ for setup_name in "${setup_names[@]}"; do
 
         pattern_arg=()
         if [ -n "$pattern_path" ]; then pattern_arg=(--pattern_path "$pattern_path"); fi
+        compare_arg=()
+        if [ "$render_object_too" != "0" ]; then compare_arg+=(--render_object_too); fi
+        if [ "$name_by_pattern" != "0" ]; then compare_arg+=(--name_by_pattern); fi
         "$PYTHON_BIN" render.py \
             -r "$input_dir" \
             -s "$setup_name" \
@@ -138,6 +150,7 @@ for setup_name in "${setup_names[@]}"; do
             --curve_radius "$curve_radius" \
             --curvature "$curvature" \
             "${pattern_arg[@]}" \
+            "${compare_arg[@]}" \
             --gpu_id "$gpu_id"
     done
 done
