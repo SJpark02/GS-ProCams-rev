@@ -51,6 +51,12 @@ if __name__ == '__main__':
                              "real-world (colmap) data, or <root>/setups/<setup>/projector "
                              "for the nepmap synthetic dataset. Point this at your own folder "
                              "of images to projection-map custom content.")
+    parser.add_argument("--surface_albedo", type=float, default=0.8,
+                        help="Uniform diffuse albedo (0-1) of the virtual projection screen. The analytic surface has no Gaussian material, so this drives how brightly the projected pattern shows up. Set <0 to keep the rasterized scene material instead.")
+    parser.add_argument("--surface_roughness", type=float, default=0.6,
+                        help="Uniform roughness (0-1) of the virtual projection screen. Higher = more matte/diffuse, lower = glossier specular highlights.")
+    parser.add_argument("--ambient", type=float, default=0.0,
+                        help="Weight of the rasterized scene colour blended into the result. 0 (default) = pure projection on the virtual screen; >0 blends in the real object.")
     parser.add_argument("--no_auto_scale", action="store_true",
                         help="Disable scene-aware auto-sizing of the synthetic surface. "
                              "By default the surface is auto-placed/-sized from the trained "
@@ -136,7 +142,10 @@ if __name__ == '__main__':
                     render_dic = render_gs_to_surface(camera, gaussians, procams_dict, pipe=None, bg_color=bg_color,
                                                       surface_mode=args.surface_mode, curve_type=args.curve_type,
                                                       curve_radius=args.curve_radius, curvature=args.curvature,
-                                                      surface_res=args.surface_res, auto_scale=not args.no_auto_scale)
+                                                      surface_res=args.surface_res, auto_scale=not args.no_auto_scale,
+                                                      surface_albedo=args.surface_albedo,
+                                                      surface_roughness=args.surface_roughness,
+                                                      ambient=args.ambient)
                 render_image = render_dic["render"]
                 save_path = os.path.join(save_dir, f"{i+1:02d}.png")
                 save_image(render_image, save_path)
@@ -171,7 +180,10 @@ if __name__ == '__main__':
                         render_image = render_gs_to_surface(camera, gaussians, procams_dict, pipe=None, bg_color=bg_color,
                                                             surface_mode=args.surface_mode, curve_type=args.curve_type,
                                                             curve_radius=args.curve_radius, curvature=args.curvature,
-                                                            surface_res=args.surface_res, auto_scale=not args.no_auto_scale)['render']
+                                                            surface_res=args.surface_res, auto_scale=not args.no_auto_scale,
+                                                            surface_albedo=args.surface_albedo,
+                                                            surface_roughness=args.surface_roughness,
+                                                            ambient=args.ambient)['render']
             end_time = time.time()
             runtime = end_time - start_time
             fps = len(args.views) * len(patterns_valid) / runtime

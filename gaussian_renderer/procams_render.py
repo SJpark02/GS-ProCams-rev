@@ -298,7 +298,8 @@ def render(viewpoint_camera, pc:GaussianModel, pipe=None, bg_color=None, procams
 def render_gs_to_surface(viewpoint_camera, pc:GaussianModel, procams_dict, pipe=None, bg_color=None,
                          surface_mode="sphere", curve_type="cylindrical",
                          curve_radius=1.0, curvature=0.5, surface_res=None,
-                         scaling_modifier=1.0, override_color=None, auto_scale=True):
+                         scaling_modifier=1.0, override_color=None, auto_scale=True,
+                         surface_albedo=0.8, surface_roughness=0.6, ambient=0.0):
     """Project a pattern onto an *analytic* virtual surface instead of the real,
     depth-reconstructed geometry.
 
@@ -438,6 +439,18 @@ def render_gs_to_surface(viewpoint_camera, pc:GaussianModel, procams_dict, pipe=
     # surf_normal in the depth-based path is (3, H, W); match that layout here.
     surf_normal = surf_normal_hwc.permute(2, 0, 1)
 
+    # ------------------------------------------------------------------
+    # Give the *analytic* surface a uniform virtual material. The Gaussian
+    # rasterizer only produces base_color / roughness where the real object
+    # is, so reusing it would light up only that small region and leave the
+    # rest of the synthetic surface black. A projection screen is modelled as
+    # a uniform (slightly rough, light-grey) diffuse surface so the whole
+    # surface receives the projected pattern. surface_albedo<0 keeps the
+    # rasterized material (legacy behaviour).
+    if surface_albedo is not None and float(surface_albedo) >= 0.0:
+        render_base_color = torch.full_like(render_base_color, float(surface_albedo))
+        render_roughness = torch.full_like(render_roughness, float(surface_roughness))
+
     # ---- Procams projection (identical structure to render()'s procams branch) ----
     # light dirs
     l = F.normalize(projector.camera_center - surf_pts3d, dim=-1)        # (H, W, 3) towards projector
@@ -449,7 +462,11 @@ def render_gs_to_surface(viewpoint_camera, pc:GaussianModel, procams_dict, pipe=
     Ip_out = F.grid_sample(Ip_out.unsqueeze(0), prj2cam_grid.unsqueeze(0), mode='bilinear', padding_mode='zeros', align_corners=False).squeeze()  # (3, H, W)
     # brdf rendering
     brdf_factor = BRDF(l, v, surf_normal, render_base_color, render_roughness)
-    render_image = brdf_factor * Ip_out + render_shs
+    # `render_shs` is the rasterized scene colour, which only exists where the
+    # real object is. For a virtual projection screen we usually want to see ONLY
+    # the projected pattern, so the ambient/scene term is scaled by `ambient`
+    # (default 0 -> pure projection; set >0 to blend in the rasterized scene).
+    render_image = brdf_factor * Ip_out + float(ambient) * render_shs
     render_image = linear_to_srgb(render_image).clamp(0.0, 1.0)
 
     # Mask out pixels where the rays missed the synthetic surface.
