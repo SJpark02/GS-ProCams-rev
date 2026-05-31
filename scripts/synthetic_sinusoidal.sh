@@ -24,6 +24,20 @@ model_types=("wo_psf")
 
 gpu_id="0"
 
+# Pick a Python interpreter: prefer an active environment's "python",
+# otherwise fall back to "python3". Override by exporting PYTHON_BIN.
+if [ -z "${PYTHON_BIN:-}" ]; then
+    if command -v python >/dev/null 2>&1; then
+        PYTHON_BIN="python"
+    elif command -v python3 >/dev/null 2>&1; then
+        PYTHON_BIN="python3"
+    else
+        echo "Error: neither 'python' nor 'python3' found on PATH."
+        echo "       Activate your environment first, e.g.: conda activate gs-procams"
+        exit 1
+    fi
+fi
+
 # Surface placement / shape parameters (tune to your scene scale).
 curve_radius="1.0"
 curvature="0.5"
@@ -57,7 +71,7 @@ for setup_name in "${setup_names[@]}"; do
         echo "  -> ${save_dir}"
         echo "============================================================"
 
-        python render.py \
+        "$PYTHON_BIN" render.py \
             -r "$input_dir" \
             -s "$setup_name" \
             -m "$model_dir" \
