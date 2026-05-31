@@ -298,7 +298,7 @@ def render(viewpoint_camera, pc:GaussianModel, pipe=None, bg_color=None, procams
 def render_gs_to_surface(viewpoint_camera, pc:GaussianModel, procams_dict, pipe=None, bg_color=None,
                          surface_mode="sphere", curve_type="cylindrical",
                          curve_radius=1.0, curvature=0.5, surface_res=None,
-                         scaling_modifier=1.0, override_color=None):
+                         scaling_modifier=1.0, override_color=None, auto_scale=True):
     """Project a pattern onto an *analytic* virtual surface instead of the real,
     depth-reconstructed geometry.
 
@@ -432,6 +432,8 @@ def render_gs_to_surface(viewpoint_camera, pc:GaussianModel, procams_dict, pipe=
         curve_radius=curve_radius,
         curvature=curvature,
         surface_res=surface_res,
+        scene_points=means3D.detach(),
+        auto_scale=auto_scale,
     )
     # surf_normal in the depth-based path is (3, H, W); match that layout here.
     surf_normal = surf_normal_hwc.permute(2, 0, 1)

@@ -265,8 +265,52 @@ def _make_curved(view, center, curve_type, radius, curvature):
     return pts.view(H, W, 3), normal.view(H, W, 3), hit_mask.view(H, W)
 
 
+def _scene_stats(view, scene_points):
+    """Estimate, from the trained Gaussian point cloud, where to place and how
+    large to make the synthetic surface so it fills the camera view.
+
+    Returns (center, depth, extent, frustum_half):
+        center:       (3,) world point on the optical axis at the scene depth.
+        depth:        scalar along-axis distance from camera to that center.
+        extent:       scalar robust half-size (radius) of the scene point cloud.
+        frustum_half: scalar half-width of the view frustum at `depth`
+                      (= depth * tan(FoV/2)); a surface of this radius fills view.
+    """
+    c2w = view.c2w
+    cam_center = c2w[:3, 3]
+    forward = torch.nn.functional.normalize(c2w[:3, :3] @ torch.tensor(
+        [0.0, 0.0, 1.0], device=scene_points.device, dtype=scene_points.dtype), dim=0)
+
+    pts = scene_points
+    # Robust centroid (median) to ignore stray Gaussians / floaters.
+    centroid = torch.median(pts, dim=0).values                       # (3,)
+    # Along-axis depth of the centroid in front of the camera.
+    rel = pts - cam_center[None, :]                                  # (N, 3)
+    along = rel @ forward                                            # (N,)
+    depth = torch.median(along).clamp(min=1e-3)                      # scalar
+    center = cam_center + forward * depth
+
+    # Scene extent: robust radius around the centroid (90th percentile distance).
+    d = torch.linalg.norm(pts - centroid[None, :], dim=-1)           # (N,)
+    try:
+        extent = torch.quantile(d, 0.9)
+    except Exception:
+        extent = d.mean() + d.std()
+    extent = extent.clamp(min=1e-3)
+
+    # Frustum half-width at the scene depth: a sphere of ~this radius fills the
+    # camera view. Use the smaller of the two FoVs so it fits both dimensions.
+    import math as _math
+    half_fov = 0.5 * min(float(view.FoVx), float(view.FoVy))
+    frustum_half = depth * _math.tan(half_fov)
+    if isinstance(frustum_half, torch.Tensor):
+        frustum_half = frustum_half.clamp(min=1e-3)
+    return center, depth, extent, frustum_half
+
+
 def make_surface_points(view, surface_mode, curve_type="cylindrical",
-                        curve_radius=1.0, curvature=0.5, surface_res=None):
+                        curve_radius=1.0, curvature=0.5, surface_res=None,
+                        scene_points=None, auto_scale=True):
     """Generate an analytic surface in front of the camera and return per-pixel
     world-space points + normals, replacing the depth-based surface.
 
@@ -275,31 +319,54 @@ def make_surface_points(view, surface_mode, curve_type="cylindrical",
         surface_mode: one of {"sphere", "hemisphere", "curved"}.
         curve_type:   for surface_mode == "curved", one of
                       {"cylindrical", "sinusoidal", "parabolic"}.
-        curve_radius: characteristic radius of the surface (sphere/cylinder radius,
-                      or spatial scale for sinusoidal/parabolic).
+        curve_radius: characteristic radius of the surface. When `auto_scale` is
+                      on and `scene_points` is given, this acts as a *relative*
+                      multiplier on the auto-estimated scene size (so the default
+                      1.0 fills the view); otherwise it is an absolute world-unit
+                      radius.
         curvature:    curvature/amplitude parameter (used by curved surfaces).
-        surface_res:  optional sampling resolution hint (currently the surface is
-                      sampled at the camera resolution; reserved for future use).
+        surface_res:  optional sampling resolution hint (reserved).
+        scene_points: optional (N, 3) tensor of the trained Gaussian centers,
+                      used to auto-place/auto-scale the surface to the scene.
+        auto_scale:   if True and scene_points is provided, derive the surface
+                      center + radius from the scene geometry so the surface fills
+                      the camera view regardless of the dataset's coordinate scale.
 
     Returns:
         surf_pts3d:  (H, W, 3) world-space surface points (0 where no hit).
         surf_normal: (H, W, 3) world-space normals facing the camera (0 where no hit).
         hit_mask:    (H, W) boolean mask of valid surface hits.
     """
-    # `surface_res` is accepted for API completeness; the analytic surface is sampled
-    # at the camera's native resolution to stay aligned with the procams pipeline.
-    _ = surface_res
+    _ = surface_res  # accepted for API completeness.
 
-    # Place the surface center a sensible distance in front of the camera.
-    distance = max(float(curve_radius) * 2.0, 1.0)
-    center, _forward = _surface_center(view, distance)
+    use_auto = bool(auto_scale) and (scene_points is not None) and (scene_points.numel() > 0)
+    if use_auto:
+        # Derive placement + size from the actual scene so the surface fills the
+        # view in whatever coordinate scale the dataset uses. `curve_radius` and
+        # `curvature` become relative multipliers in this mode.
+        center, depth, extent, frustum_half = _scene_stats(view, scene_points)
+        # Target radius so the surface fills the view: take the larger of the
+        # scene extent and ~80% of the frustum half-width at the scene depth.
+        base = max(float(extent), 0.8 * float(frustum_half))
+        radius = float(curve_radius) * base
+        radius = max(radius, 1e-3)
+        # Pull the sphere/bowl slightly toward the camera so its near face frames
+        # the scene rather than enclosing the camera (place center at depth, but
+        # never closer than radius so the camera stays outside the surface).
+        eff_curvature = float(curvature) * base
+    else:
+        # Absolute mode: place the surface a sensible distance in front of camera.
+        distance = max(float(curve_radius) * 2.0, 1.0)
+        center, _forward = _surface_center(view, distance)
+        radius = float(curve_radius)
+        eff_curvature = float(curvature)
 
     if surface_mode == "sphere":
-        return _make_sphere(view, center, float(curve_radius), hemisphere=False)
+        return _make_sphere(view, center, radius, hemisphere=False)
     elif surface_mode == "hemisphere":
-        return _make_sphere(view, center, float(curve_radius), hemisphere=True)
+        return _make_sphere(view, center, radius, hemisphere=True)
     elif surface_mode == "curved":
-        return _make_curved(view, center, curve_type, float(curve_radius), float(curvature))
+        return _make_curved(view, center, curve_type, radius, eff_curvature)
     else:
         raise ValueError(
             "Unsupported surface_mode: {}. Expected one of: 'sphere', 'hemisphere', 'curved'.".format(surface_mode)

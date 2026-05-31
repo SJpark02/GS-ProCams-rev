@@ -51,6 +51,11 @@ if __name__ == '__main__':
                              "real-world (colmap) data, or <root>/setups/<setup>/projector "
                              "for the nepmap synthetic dataset. Point this at your own folder "
                              "of images to projection-map custom content.")
+    parser.add_argument("--no_auto_scale", action="store_true",
+                        help="Disable scene-aware auto-sizing of the synthetic surface. "
+                             "By default the surface is auto-placed/-sized from the trained "
+                             "Gaussians so it fills the view; with this flag, --curve_radius "
+                             "and --curvature are treated as absolute world-unit values.")
     args = parser.parse_args()
 
     device = torch.device(f"cuda:{args.gpu_id}")
@@ -131,7 +136,7 @@ if __name__ == '__main__':
                     render_dic = render_gs_to_surface(camera, gaussians, procams_dict, pipe=None, bg_color=bg_color,
                                                       surface_mode=args.surface_mode, curve_type=args.curve_type,
                                                       curve_radius=args.curve_radius, curvature=args.curvature,
-                                                      surface_res=args.surface_res)
+                                                      surface_res=args.surface_res, auto_scale=not args.no_auto_scale)
                 render_image = render_dic["render"]
                 save_path = os.path.join(save_dir, f"{i+1:02d}.png")
                 save_image(render_image, save_path)
@@ -166,7 +171,7 @@ if __name__ == '__main__':
                         render_image = render_gs_to_surface(camera, gaussians, procams_dict, pipe=None, bg_color=bg_color,
                                                             surface_mode=args.surface_mode, curve_type=args.curve_type,
                                                             curve_radius=args.curve_radius, curvature=args.curvature,
-                                                            surface_res=args.surface_res)['render']
+                                                            surface_res=args.surface_res, auto_scale=not args.no_auto_scale)['render']
             end_time = time.time()
             runtime = end_time - start_time
             fps = len(args.views) * len(patterns_valid) / runtime
