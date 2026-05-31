@@ -198,17 +198,44 @@ def loadMicroCameras_JSON(json_path, target_view_id:list[int]):
     with open(json_path, 'r') as f:
         data = json.load(f)
     
+    # Index cameras by view_id. The view_id stored in cameras.json may be:
+    #   * an int            (e.g. 1)
+    #   * a plain string    (e.g. "1")
+    #   * a zero-padded str (e.g. "0000", "0002"  <- nepmap synthetic dataset)
+    # while the requested ids from --views are parsed as int. To make the match
+    # robust we register, for every camera, several equivalent keys: the original
+    # value, its str() form, and -- when the id is numeric -- its int() form.
+    # Lookups then try the raw target, its str form, and its numeric form.
+    def _numeric_key(v):
+        try:
+            return int(str(v))
+        except (TypeError, ValueError):
+            return None
+
     cam_params = {}
     for cam_info in data:
         view_id = cam_info["view_id"]
-        cam_params[view_id] = cam_info
+        cam_params[view_id] = cam_info            # original (int or str)
+        cam_params[str(view_id)] = cam_info       # string-normalized ("0000")
+        nkey = _numeric_key(view_id)
+        if nkey is not None:
+            cam_params[nkey] = cam_info           # numeric-normalized (int 0)
 
     micro_cameras = []
     for target in target_view_id:
-        try:
-            cam_info = cam_params[target]
-        except:
-            raise ValueError(f"Can not find the camera with view_id={target} in the json file {json_path}")
+        cam_info = cam_params.get(target)
+        if cam_info is None:
+            cam_info = cam_params.get(str(target))
+        if cam_info is None:
+            nkey = _numeric_key(target)
+            if nkey is not None:
+                cam_info = cam_params.get(nkey)
+        if cam_info is None:
+            available = sorted({str(c["view_id"]) for c in data})
+            raise ValueError(
+                f"Can not find the camera with view_id={target} in the json file {json_path}. "
+                f"Available view_ids: {available}"
+            )
         micro_cameras.append(MicroCam(R=np.array(cam_info["rotation"]),
                                       T=np.array(cam_info["T"]),
                                       K=np.array(cam_info["K"]), 

@@ -67,8 +67,12 @@ for setup_name in "${setup_names[@]}"; do
         monitor_pid=$!
 
         # Run the training script
+        # NOTE: train.py expects -r (root) and -s (setup) to be SEPARATE.
+        # Internally the scene is loaded from "<root>/setups/<setup>"
+        # (see scene/__init__.py). Passing the full path as -s breaks scene-type
+        # detection ("Could not recognize scene type!").
         echo "Run train.py ${extra_args} for: $setup_name"
-        python train.py -s "$input_dir/$setup_name" -m "$model_dir" --evaluate ${extra_args} --gpu_id "$gpu_id"
+        python train.py -r "$input_dir" -s "$setup_name" -m "$model_dir" --evaluate ${extra_args} --gpu_id "$gpu_id"
 
         # Stop GPU memory monitoring
         kill ${monitor_pid}

@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from diff_surfel_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
-from utils.point_utils import depths_to_points, points_to_normal, warp_points
+from utils.point_utils import depths_to_points, points_to_normal, warp_points, make_surface_points
 from utils.loss_utils import l1_loss, ssim,  bilateral_smooth_loss
 from utils.image_utils import linear_to_srgb
 from collections import namedtuple
@@ -292,4 +292,194 @@ def render(viewpoint_camera, pc:GaussianModel, pipe=None, bg_color=None, procams
                             "brdf_factor": brdf_factor,
                             "render_shs": render_shs,
                             "prj2cam_grid": prj2cam_grid})
+    return results
+
+
+def render_gs_to_surface(viewpoint_camera, pc:GaussianModel, procams_dict, pipe=None, bg_color=None,
+                         surface_mode="sphere", curve_type="cylindrical",
+                         curve_radius=1.0, curvature=0.5, surface_res=None,
+                         scaling_modifier=1.0, override_color=None, auto_scale=True,
+                         surface_albedo=0.8, surface_roughness=0.6, ambient=0.0):
+    """Project a pattern onto an *analytic* virtual surface instead of the real,
+    depth-reconstructed geometry.
+
+    This is the "new branch" of the rendering pipeline. It reuses the exact same
+    GaussianRasterizer + procams (warp -> grid_sample -> BRDF) machinery as
+    `render()`, but replaces the per-pixel surface points/normals (which `render()`
+    derives from the rasterized depth) with points/normals sampled from a synthetic
+    surface placed in front of the camera.
+
+    Supported surfaces:
+        surface_mode == "sphere"      : full sphere facing the camera.
+        surface_mode == "hemisphere"  : front-facing hemisphere.
+        surface_mode == "curved"      : curved screen, with curve_type in
+                                        {"cylindrical", "sinusoidal", "parabolic"}.
+
+    Args:
+        viewpoint_camera: the camera to render from.
+        pc:               the Gaussian model (provides BRDF attributes & SHs).
+        procams_dict:     must contain {"projector", "pattern"}.
+        surface_mode:     "sphere" | "hemisphere" | "curved".
+        curve_type:       sub-type for "curved" surfaces.
+        curve_radius:     characteristic radius / spatial scale of the surface.
+        curvature:        curvature / amplitude (used by curved surfaces).
+        surface_res:      optional sampling-resolution hint (reserved).
+
+    Returns:
+        dict with keys: "render", "Ip_out", "brdf_factor", "render_shs",
+        "prj2cam_grid", "surf_normal", "surface_mask".
+    """
+    # ---- Defaults & validation (mirrors render()) ----
+    if pipe is None: pipe = PipelineParams(convert_SHs_python=False, compute_cov3D_python=False, depth_ratio=0.0, debug=False)
+    if bg_color is None: bg_color = torch.zeros(3, device="cuda")
+    if procams_dict is None:
+        raise ValueError("procams_dict must be provided for render_gs_to_surface.")
+    projector = procams_dict.get("projector")
+    pattern = procams_dict.get("pattern")
+    if projector is None or pattern is None:
+        raise ValueError("procams_dict must contain both projector and pattern.")
+
+    screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
+    try:
+        screenspace_points.retain_grad()
+    except:
+        pass
+
+    # ---- Rasterization setup (identical to render()) ----
+    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
+    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+
+    raster_settings = GaussianRasterizationSettings(
+        image_height=int(viewpoint_camera.image_height),
+        image_width=int(viewpoint_camera.image_width),
+        tanfovx=tanfovx,
+        tanfovy=tanfovy,
+        bg=bg_color,
+        scale_modifier=scaling_modifier,
+        viewmatrix=viewpoint_camera.world_view_transform,
+        projmatrix=viewpoint_camera.full_proj_transform,
+        sh_degree=pc.active_sh_degree,
+        campos=viewpoint_camera.camera_center,
+        prefiltered=False,
+        debug=False,
+    )
+
+    rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+
+    means3D = pc.get_xyz
+    means2D = screenspace_points
+    opacity = pc.get_opacity
+
+    scales = None
+    rotations = None
+    cov3D_precomp = None
+    if pipe.compute_cov3D_python:
+        splat2world = pc.get_covariance(scaling_modifier)
+        W, H = viewpoint_camera.image_width, viewpoint_camera.image_height
+        near, far = viewpoint_camera.znear, viewpoint_camera.zfar
+        ndc2pix = torch.tensor([
+            [W / 2, 0, 0, (W-1) / 2],
+            [0, H / 2, 0, (H-1) / 2],
+            [0, 0, far-near, near],
+            [0, 0, 0, 1]]).float().cuda().T
+        world2pix =  viewpoint_camera.full_proj_transform @ ndc2pix
+        cov3D_precomp = (splat2world[:, [0,1,3]] @ world2pix[:,[0,1,3]]).permute(0,2,1).reshape(-1, 9)
+    else:
+        scales = pc.get_scaling
+        rotations = pc.get_rotation
+
+    # BRDF attributes
+    base_color = pc.get_base_color
+    roughness = pc.get_roughness
+    features = torch.cat([base_color, roughness], dim=-1)
+
+    shs = None
+    colors_precomp = None
+    if override_color is None:
+        if pipe.convert_SHs_python:
+            shs_view = pc.get_features.transpose(1, 2).view(-1, 3, (pc.max_sh_degree+1)**2)
+            dir_pp = (pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1))
+            dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)
+            sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)
+            colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
+        else:
+            shs = pc.get_features
+    else:
+        colors_precomp = override_color
+
+    render_shs, radii, render_features, allmap = rasterizer(
+        means3D = means3D,
+        means2D = means2D,
+        shs = shs,
+        colors_precomp = colors_precomp,
+        features = features,
+        opacities = opacity,
+        scales = scales,
+        rotations = rotations,
+        cov3D_precomp = cov3D_precomp
+    )
+
+    render_base_color, render_roughness = torch.split(render_features, [3, 1], dim=0)
+
+    # ============================================================================
+    # KEY DIFFERENCE vs render():
+    # Instead of reconstructing the surface from rasterized depth, build an analytic
+    # synthetic surface (sphere / hemisphere / curved) in front of the camera.
+    # ============================================================================
+    surf_pts3d, surf_normal_hwc, surface_mask = make_surface_points(
+        viewpoint_camera,
+        surface_mode=surface_mode,
+        curve_type=curve_type,
+        curve_radius=curve_radius,
+        curvature=curvature,
+        surface_res=surface_res,
+        scene_points=means3D.detach(),
+        auto_scale=auto_scale,
+    )
+    # surf_normal in the depth-based path is (3, H, W); match that layout here.
+    surf_normal = surf_normal_hwc.permute(2, 0, 1)
+
+    # ------------------------------------------------------------------
+    # Give the *analytic* surface a uniform virtual material. The Gaussian
+    # rasterizer only produces base_color / roughness where the real object
+    # is, so reusing it would light up only that small region and leave the
+    # rest of the synthetic surface black. A projection screen is modelled as
+    # a uniform (slightly rough, light-grey) diffuse surface so the whole
+    # surface receives the projected pattern. surface_albedo<0 keeps the
+    # rasterized material (legacy behaviour).
+    if surface_albedo is not None and float(surface_albedo) >= 0.0:
+        render_base_color = torch.full_like(render_base_color, float(surface_albedo))
+        render_roughness = torch.full_like(render_roughness, float(surface_roughness))
+
+    # ---- Procams projection (identical structure to render()'s procams branch) ----
+    # light dirs
+    l = F.normalize(projector.camera_center - surf_pts3d, dim=-1)        # (H, W, 3) towards projector
+    v = F.normalize(viewpoint_camera.camera_center - surf_pts3d, dim=-1) # (H, W, 3) towards camera
+    # geometric mapping
+    prj_pts2d, _ = warp_points(projector, surf_pts3d)                    # (H, W, 2/3)
+    prj2cam_grid = prj_pts2d * 2 / projector.prj_size - 1                # -> (-1, 1)
+    Ip_out = projector(pattern)
+    Ip_out = F.grid_sample(Ip_out.unsqueeze(0), prj2cam_grid.unsqueeze(0), mode='bilinear', padding_mode='zeros', align_corners=False).squeeze()  # (3, H, W)
+    # brdf rendering
+    brdf_factor = BRDF(l, v, surf_normal, render_base_color, render_roughness)
+    # `render_shs` is the rasterized scene colour, which only exists where the
+    # real object is. For a virtual projection screen we usually want to see ONLY
+    # the projected pattern, so the ambient/scene term is scaled by `ambient`
+    # (default 0 -> pure projection; set >0 to blend in the rasterized scene).
+    render_image = brdf_factor * Ip_out + float(ambient) * render_shs
+    render_image = linear_to_srgb(render_image).clamp(0.0, 1.0)
+
+    # Mask out pixels where the rays missed the synthetic surface.
+    mask = surface_mask.unsqueeze(0).float()  # (1, H, W)
+    render_image = render_image * mask
+
+    results = {
+        "render": render_image,
+        "Ip_out": Ip_out,
+        "brdf_factor": brdf_factor,
+        "render_shs": render_shs,
+        "prj2cam_grid": prj2cam_grid,
+        "surf_normal": surf_normal,
+        "surface_mask": surface_mask,
+    }
     return results
