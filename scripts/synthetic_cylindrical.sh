@@ -47,11 +47,36 @@ curvature="0.5"
 # To force specific views, set e.g.  views="1 6 11"
 views=""
 
+# When views are auto-detected from cameras.json, limit the number of views
+# rendered per surface to this many (evenly spaced across all available
+# views). The nepmap synthetic dataset can contain hundreds of views, so
+# rendering all of them onto every surface would be very slow. Set to 0 to
+# render ALL detected views. Ignored when "views" is set explicitly above.
+max_views="${MAX_VIEWS:-5}"
+
 # Helper: read available view_ids from a model's cameras.json.
 get_views_from_cameras_json() {
     local cam_json="$1/cameras.json"
     [ -f "$cam_json" ] || return 1
-    "$PYTHON_BIN" -c "import json,sys; d=json.load(open(sys.argv[1])); print(' '.join(str(c['view_id']) for c in d))" "$cam_json"
+    "$PYTHON_BIN" -c "
+import json, sys
+data = json.load(open(sys.argv[1]))
+ids = [c['view_id'] for c in data]
+def num(v):
+    try: return int(str(v))
+    except Exception: return None
+nums = [num(v) for v in ids]
+if all(n is not None for n in nums):
+    sel = sorted(set(nums))
+else:
+    sel = list(dict.fromkeys(str(v) for v in ids))
+mx = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else 0
+if mx and len(sel) > mx:
+    step = (len(sel) - 1) / float(mx - 1) if mx > 1 else 0
+    sel = [sel[int(round(i * step))] for i in range(mx)]
+    seen = set(); sel = [x for x in sel if not (x in seen or seen.add(x))]
+print(' '.join(str(x) for x in sel))
+" "$cam_json" "$max_views"
 }
 
 # -----------------------------------------------------------------------------
