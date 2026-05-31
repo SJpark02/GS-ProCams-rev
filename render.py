@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from torchvision.utils import save_image
 from tqdm import tqdm
-from gaussian_renderer import render
+from gaussian_renderer import render, render_gs_to_surface
 from scene import GaussianModel
 from utils.camera_utils import loadMicroCameras_COLMAP, loadMicroCameras_JSON, LoadProjector_JSON
 from utils.image_utils import loadImage
@@ -31,6 +31,20 @@ if __name__ == '__main__':
     parser.add_argument("--test_fps", action="store_true", help="Test FPS")
     parser.add_argument("--render_scene", action="store_true", help="Render the scene")
     parser.add_argument("--gpu_id", type=int, default=0, help="GPU ID to use")
+    # ---- Virtual surface projection (render_gs_to_surface branch) ----
+    parser.add_argument("--surface_mode", type=str, default=None,
+                        choices=["sphere", "hemisphere", "curved"],
+                        help="Project the pattern onto a synthetic surface instead of the real geometry. "
+                             "If omitted, the default depth-based render() is used.")
+    parser.add_argument("--curve_type", type=str, default="cylindrical",
+                        choices=["cylindrical", "sinusoidal", "parabolic"],
+                        help="Sub-type of curved surface (only used when --surface_mode curved).")
+    parser.add_argument("--curve_radius", type=float, default=1.0,
+                        help="Characteristic radius / spatial scale of the synthetic surface.")
+    parser.add_argument("--curvature", type=float, default=0.5,
+                        help="Curvature / amplitude parameter for curved surfaces.")
+    parser.add_argument("--surface_res", type=int, default=None,
+                        help="Optional surface sampling resolution hint (reserved).")
     args = parser.parse_args()
 
     device = torch.device(f"cuda:{args.gpu_id}")
@@ -83,7 +97,13 @@ if __name__ == '__main__':
             os.makedirs(Ip_out_dir, exist_ok=True)
             for i, pattern in enumerate(tqdm(patterns_valid, desc=f"Relighting view {view_id:02d}", leave=False)):
                 procams_dict.update({"pattern": pattern})
-                render_dic = render(camera, gaussians, pipe=None, bg_color=bg_color, procams_dict=procams_dict)
+                if args.surface_mode is None:
+                    render_dic = render(camera, gaussians, pipe=None, bg_color=bg_color, procams_dict=procams_dict)
+                else:
+                    render_dic = render_gs_to_surface(camera, gaussians, procams_dict, pipe=None, bg_color=bg_color,
+                                                      surface_mode=args.surface_mode, curve_type=args.curve_type,
+                                                      curve_radius=args.curve_radius, curvature=args.curvature,
+                                                      surface_res=args.surface_res)
                 render_image = render_dic["render"]
                 save_path = os.path.join(save_dir, f"{i+1:02d}.png")
                 save_image(render_image, save_path)
@@ -112,7 +132,13 @@ if __name__ == '__main__':
             for view_id, camera in cameras_dict.items():
                 for i, pattern in enumerate(patterns_valid):
                     procams_dict.update({"pattern": pattern})
-                    render_image = render(camera, gaussians, pipe=None, bg_color=bg_color, procams_dict=procams_dict)['render']
+                    if args.surface_mode is None:
+                        render_image = render(camera, gaussians, pipe=None, bg_color=bg_color, procams_dict=procams_dict)['render']
+                    else:
+                        render_image = render_gs_to_surface(camera, gaussians, procams_dict, pipe=None, bg_color=bg_color,
+                                                            surface_mode=args.surface_mode, curve_type=args.curve_type,
+                                                            curve_radius=args.curve_radius, curvature=args.curvature,
+                                                            surface_res=args.surface_res)['render']
             end_time = time.time()
             runtime = end_time - start_time
             fps = len(args.views) * len(patterns_valid) / runtime
