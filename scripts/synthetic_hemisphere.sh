@@ -49,10 +49,12 @@ views=""
 
 # When views are auto-detected from cameras.json, limit the number of views
 # rendered per surface to this many (evenly spaced across all available
-# views). The nepmap synthetic dataset can contain hundreds of views, so
-# rendering all of them onto every surface would be very slow. Set to 0 to
-# render ALL detected views. Ignored when "views" is set explicitly above.
-max_views="${MAX_VIEWS:-5}"
+# views). DEFAULT 0 = render ALL detected views.
+# NOTE: the nepmap synthetic dataset can contain hundreds of views, so
+# rendering every view onto every surface (x every pattern) can be slow.
+# To render only a quick subset, set e.g. MAX_VIEWS=5 (evenly spaced).
+# Ignored when "views" is set explicitly above.
+max_views="${MAX_VIEWS:-0}"
 
 # Directory of patterns/images to project onto the shapes.
 # DEFAULT: data/my_images  -- drop your OWN images in that folder and they
