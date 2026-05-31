@@ -54,11 +54,21 @@ views=""
 # render ALL detected views. Ignored when "views" is set explicitly above.
 max_views="${MAX_VIEWS:-5}"
 
-# Directory of patterns/images to project. Leave EMPTY to let render.py
-# auto-detect (nepmap synthetic uses <root>/setups/<setup>/projector).
-# Set this (or env PATTERN_PATH) to a folder of your OWN images to do
-# custom projection mapping, e.g. pattern_path="data/my_images".
-pattern_path="${PATTERN_PATH:-}"
+# Directory of patterns/images to project onto the shapes.
+# DEFAULT: data/my_images  -- drop your OWN images in that folder and they
+# will be mapped automatically (no env var needed). Add/remove files there
+# to add/remove the projected images.
+# Override per-run with:  PATTERN_PATH="some/other/dir" bash <script>
+# If the default folder is missing or empty, we fall back to the dataset
+# patterns (nepmap: <root>/setups/<setup>/projector) so the script still runs.
+pattern_path="${PATTERN_PATH:-data/my_images}"
+# Fall back to dataset auto-detect when the chosen folder has no images.
+if [ -n "$pattern_path" ]; then
+    if [ ! -d "$pattern_path" ] || [ -z "$(ls -A "$pattern_path" 2>/dev/null)" ]; then
+        echo "[INFO] pattern folder '$pattern_path' missing/empty -> using dataset patterns."
+        pattern_path=""
+    fi
+fi
 
 # Also render the SAME pattern on the real object (original synthetic.sh result)
 # next to the surface render, for comparison. Saved under <view>/object/.

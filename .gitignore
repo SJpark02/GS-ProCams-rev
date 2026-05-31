@@ -9,6 +9,11 @@ screenshots
 gui
 __pycache__
 data/*
+# Keep the custom-projection image folder (README) tracked, but ignore
+# the user's actual image files dropped into it.
+!data/my_images/
+data/my_images/*
+!data/my_images/README.md
 assets/*
 .DS_Store
 __MACOSX/
