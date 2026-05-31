@@ -42,6 +42,18 @@ fi
 curve_radius="1.0"
 curvature="0.5"
 
+# View ids to render. Leave EMPTY to auto-detect from each model's cameras.json
+# (recommended for nepmap, whose view_id set depends on the training config).
+# To force specific views, set e.g.  views="1 6 11"
+views=""
+
+# Helper: read available view_ids from a model's cameras.json.
+get_views_from_cameras_json() {
+    local cam_json="$1/cameras.json"
+    [ -f "$cam_json" ] || return 1
+    "$PYTHON_BIN" -c "import json,sys; d=json.load(open(sys.argv[1])); print(' '.join(str(c['view_id']) for c in d))" "$cam_json"
+}
+
 # -----------------------------------------------------------------------------
 # Rendering loop
 # -----------------------------------------------------------------------------
@@ -71,12 +83,23 @@ for setup_name in "${setup_names[@]}"; do
         echo "  -> ${save_dir}"
         echo "============================================================"
 
+        # Resolve which views to render: use $views if set, else auto-detect.
+        render_views="$views"
+        if [ -z "$render_views" ]; then
+            render_views="$(get_views_from_cameras_json "$model_dir")"
+        fi
+        if [ -z "$render_views" ]; then
+            echo "[WARN] No views found for '${setup_name}' (set 'views' or check cameras.json). Skipping."
+            continue
+        fi
+
         "$PYTHON_BIN" render.py \
             -r "$input_dir" \
             -s "$setup_name" \
             -m "$model_dir" \
             -o "$save_dir" \
             --white_background \
+            --views ${render_views} \
             --surface_mode hemisphere \
             --curve_radius "$curve_radius" \
             --curvature "$curvature" \

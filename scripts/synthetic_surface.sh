@@ -53,6 +53,18 @@ fi
 curve_radius="1.0"
 curvature="0.5"
 
+# View ids to render. Leave EMPTY to auto-detect from each model's cameras.json
+# (recommended for nepmap, whose view_id set depends on the training config).
+# To force specific views, set e.g.  views="1 6 11"
+views=""
+
+# Helper: read available view_ids from a model's cameras.json.
+get_views_from_cameras_json() {
+    local cam_json="$1/cameras.json"
+    [ -f "$cam_json" ] || return 1
+    "$PYTHON_BIN" -c "import json,sys; d=json.load(open(sys.argv[1])); print(' '.join(str(c['view_id']) for c in d))" "$cam_json"
+}
+
 # Surfaces to render. Each entry is: "<surface_mode>[:<curve_type>]"
 # (curve_type only applies to the 'curved' mode).
 surfaces=(
@@ -109,6 +121,17 @@ for setup_name in "${setup_names[@]}"; do
             echo "  -> ${save_dir}"
             echo "============================================================"
 
+            # Resolve which views to render: use $views if set, else auto-detect
+            # from this model's cameras.json.
+            render_views="$views"
+            if [ -z "$render_views" ]; then
+                render_views="$(get_views_from_cameras_json "$model_dir")"
+            fi
+            if [ -z "$render_views" ]; then
+                echo "[WARN] No views found for '${setup_name}' (set 'views' or check cameras.json). Skipping."
+                continue
+            fi
+
             # render.py uses the new render_gs_to_surface branch when
             # --surface_mode is provided.
             "$PYTHON_BIN" render.py \
@@ -117,6 +140,7 @@ for setup_name in "${setup_names[@]}"; do
                 -m "$model_dir" \
                 -o "$save_dir" \
                 --white_background \
+                --views ${render_views} \
                 "${surface_args[@]}" \
                 --gpu_id "$gpu_id"
         done
