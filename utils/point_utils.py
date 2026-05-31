@@ -288,9 +288,10 @@ def _scene_stats(view, scene_points):
     rel = pts - cam_center[None, :]                                  # (N, 3)
     along = rel @ forward                                            # (N,)
     depth = torch.median(along).clamp(min=1e-3)                      # scalar
-    center = cam_center + forward * depth
+    axis_center = cam_center + forward * depth
 
-    # Scene extent: robust radius around the centroid (90th percentile distance).
+    # Scene extent: robust radius around the centroid (use a sampling of
+    # percentiles so a few floaters do not blow up the size).
     d = torch.linalg.norm(pts - centroid[None, :], dim=-1)           # (N,)
     try:
         extent = torch.quantile(d, 0.9)
@@ -298,14 +299,16 @@ def _scene_stats(view, scene_points):
         extent = d.mean() + d.std()
     extent = extent.clamp(min=1e-3)
 
-    # Frustum half-width at the scene depth: a sphere of ~this radius fills the
-    # camera view. Use the smaller of the two FoVs so it fits both dimensions.
+    # Frustum half-width at the scene depth (depth * tan(FoV/2)); used only as an
+    # upper bound so the surface never grows larger than the visible view.
     import math as _math
     half_fov = 0.5 * min(float(view.FoVx), float(view.FoVy))
     frustum_half = depth * _math.tan(half_fov)
     if isinstance(frustum_half, torch.Tensor):
         frustum_half = frustum_half.clamp(min=1e-3)
-    return center, depth, extent, frustum_half
+    # Return the *true 3D centroid* as the center so the surface sits exactly on
+    # the object (and therefore inside the projector's illuminated region).
+    return centroid, axis_center, depth, extent, frustum_half
 
 
 def make_surface_points(view, surface_mode, curve_type="cylindrical",
@@ -344,15 +347,24 @@ def make_surface_points(view, surface_mode, curve_type="cylindrical",
         # Derive placement + size from the actual scene so the surface fills the
         # view in whatever coordinate scale the dataset uses. `curve_radius` and
         # `curvature` become relative multipliers in this mode.
-        center, depth, extent, frustum_half = _scene_stats(view, scene_points)
-        # Target radius so the surface fills the view: take the larger of the
-        # scene extent and ~80% of the frustum half-width at the scene depth.
-        base = max(float(extent), 0.8 * float(frustum_half))
+        centroid, axis_center, depth, extent, frustum_half = _scene_stats(view, scene_points)
+        # Size the surface to the OBJECT (scene extent), not the whole frustum:
+        # the projector only illuminates the object's region, so a surface much
+        # larger than the object would fall outside the projector and render
+        # black. Cap at the frustum half-width so it still fits the view.
+        base = float(extent)
+        base = min(base, float(frustum_half))
         radius = float(curve_radius) * base
         radius = max(radius, 1e-3)
-        # Pull the sphere/bowl slightly toward the camera so its near face frames
-        # the scene rather than enclosing the camera (place center at depth, but
-        # never closer than radius so the camera stays outside the surface).
+        # Center the surface on the real object so it lies within the projector's
+        # coverage. Keep the camera safely outside the sphere.
+        center = centroid
+        cam_center = view.c2w[:3, 3]
+        cam_to_center = float(torch.linalg.norm(center - cam_center))
+        if cam_to_center <= radius:
+            # Object is closer than the radius would allow; shrink so the camera
+            # stays outside (otherwise every ray starts inside the sphere).
+            radius = max(cam_to_center * 0.8, 1e-3)
         eff_curvature = float(curvature) * base
     else:
         # Absolute mode: place the surface a sensible distance in front of camera.
