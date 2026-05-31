@@ -198,17 +198,25 @@ def loadMicroCameras_JSON(json_path, target_view_id:list[int]):
     with open(json_path, 'r') as f:
         data = json.load(f)
     
+    # Index cameras by view_id. The view_id stored in cameras.json may be an int
+    # (e.g. 1) or a string (e.g. "0", "castle_00"), while the requested ids from
+    # --views are parsed as int. Register both the original key and its string
+    # form, and normalize lookups to str, so the match is type-agnostic.
     cam_params = {}
     for cam_info in data:
         view_id = cam_info["view_id"]
-        cam_params[view_id] = cam_info
+        cam_params[view_id] = cam_info        # original (int or str)
+        cam_params[str(view_id)] = cam_info   # string-normalized
 
     micro_cameras = []
     for target in target_view_id:
-        try:
-            cam_info = cam_params[target]
-        except:
-            raise ValueError(f"Can not find the camera with view_id={target} in the json file {json_path}")
+        cam_info = cam_params.get(target, cam_params.get(str(target)))
+        if cam_info is None:
+            available = sorted({str(c["view_id"]) for c in data})
+            raise ValueError(
+                f"Can not find the camera with view_id={target} in the json file {json_path}. "
+                f"Available view_ids: {available}"
+            )
         micro_cameras.append(MicroCam(R=np.array(cam_info["rotation"]),
                                       T=np.array(cam_info["T"]),
                                       K=np.array(cam_info["K"]), 
