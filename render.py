@@ -45,6 +45,12 @@ if __name__ == '__main__':
                         help="Curvature / amplitude parameter for curved surfaces.")
     parser.add_argument("--surface_res", type=int, default=None,
                         help="Optional surface sampling resolution hint (reserved).")
+    parser.add_argument("--pattern_path", type=str, default=None,
+                        help="Directory of projection patterns to relight with. "
+                             "If omitted, it is auto-detected: <root>/patterns/test for "
+                             "real-world (colmap) data, or <root>/setups/<setup>/projector "
+                             "for the nepmap synthetic dataset. Point this at your own folder "
+                             "of images to projection-map custom content.")
     args = parser.parse_args()
 
     device = torch.device(f"cuda:{args.gpu_id}")
@@ -82,9 +88,31 @@ if __name__ == '__main__':
         print("Projector loaded")
         procams_dict = {"projector": projector}
 
-        # Validation patterns loading
-        patterns_valid_dir = os.path.join(args.root, "patterns", "test")
-        patterns_valid = [loadImage(os.path.join(patterns_valid_dir, pattern_valid_file)) for pattern_valid_file in tqdm(sorted(os.listdir(patterns_valid_dir)), leave=False)]
+        # Validation patterns loading.
+        # The pattern directory differs between dataset layouts:
+        #   * real-world (colmap): <root>/patterns/test
+        #   * nepmap synthetic   : <root>/setups/<setup>/projector
+        # A user-supplied --pattern_path always wins (e.g. to project custom images).
+        if args.pattern_path is not None:
+            patterns_valid_dir = args.pattern_path
+        else:
+            candidates = [
+                os.path.join(args.root, "patterns", "test"),
+                os.path.join(args.root, "setups", args.setup, "projector"),
+            ]
+            patterns_valid_dir = next((c for c in candidates if os.path.isdir(c)), candidates[0])
+        if not os.path.isdir(patterns_valid_dir):
+            raise FileNotFoundError(
+                f"Pattern directory not found: {patterns_valid_dir}. "
+                f"Pass --pattern_path <dir> to specify the folder of patterns/images to project."
+            )
+        pattern_files = [f for f in sorted(os.listdir(patterns_valid_dir))
+                         if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"))
+                         and os.path.splitext(f)[0] not in ("all_white",)]
+        if len(pattern_files) == 0:
+            raise FileNotFoundError(f"No image patterns found in {patterns_valid_dir}.")
+        print(f"Loading {len(pattern_files)} pattern(s) from: {patterns_valid_dir}")
+        patterns_valid = [loadImage(os.path.join(patterns_valid_dir, pattern_valid_file)) for pattern_valid_file in tqdm(pattern_files, leave=False)]
         patterns_valid = [torch.from_numpy(pattern_valid).float().cuda().permute(2, 0, 1).clamp(0, 1) for pattern_valid in patterns_valid]
         patterns_valid = torch.stack(patterns_valid, dim=0)
         

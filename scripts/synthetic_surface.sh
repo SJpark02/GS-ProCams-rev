@@ -65,6 +65,12 @@ views=""
 # render ALL detected views. Ignored when "views" is set explicitly above.
 max_views="${MAX_VIEWS:-5}"
 
+# Directory of patterns/images to project. Leave EMPTY to let render.py
+# auto-detect (nepmap synthetic uses <root>/setups/<setup>/projector).
+# Set this (or env PATTERN_PATH) to a folder of your OWN images to do
+# custom projection mapping, e.g. pattern_path="data/my_images".
+pattern_path="${PATTERN_PATH:-}"
+
 # Helper: read available view_ids from a model's cameras.json.
 get_views_from_cameras_json() {
     local cam_json="$1/cameras.json"
@@ -159,6 +165,8 @@ for setup_name in "${setup_names[@]}"; do
 
             # render.py uses the new render_gs_to_surface branch when
             # --surface_mode is provided.
+            pattern_arg=()
+            if [ -n "$pattern_path" ]; then pattern_arg=(--pattern_path "$pattern_path"); fi
             "$PYTHON_BIN" render.py \
                 -r "$input_dir" \
                 -s "$setup_name" \
@@ -167,6 +175,7 @@ for setup_name in "${setup_names[@]}"; do
                 --white_background \
                 --views ${render_views} \
                 "${surface_args[@]}" \
+                "${pattern_arg[@]}" \
                 --gpu_id "$gpu_id"
         done
     done
